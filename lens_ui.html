@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J-lens Slice</title>
+<style>
+  :root {
+    --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --border: #d6d3d1;
+    --panel: #ffffff; --accent: #2563eb; --accent-fg: #ffffff; --error: #b91c1c;
+    --user-bg: #dbeafe; --bot-bg: #f5f5f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --border: #44403c;
+      --panel: #292524; --accent: #60a5fa; --accent-fg: #0c0a09; --error: #f87171;
+      --user-bg: #1e3a5f; --bot-bg: #3a3532;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .title-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+  h1 span { color: var(--muted); font-weight: normal; }
+  .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .tabs button {
+    background: none; color: var(--muted); border: 0; border-radius: 0;
+    padding: 2px 12px; font-weight: normal; font-size: 13px;
+  }
+  .tabs button.active { background: var(--accent); color: var(--accent-fg); }
+  #toggle {
+    background: none; color: var(--muted); border: 1px solid var(--border);
+    padding: 1px 8px; font-weight: normal; font-size: 12px;
+  }
+  #summary {
+    display: none; flex: 1; min-width: 0; color: var(--muted);
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+  }
+  #panel { margin-top: 8px; }
+  header.collapsed #panel { display: none; }
+  header.collapsed #summary { display: block; }
+  textarea {
+    width: 100%; min-height: 64px; resize: vertical; padding: 8px;
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 8px; }
+  label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  select, input[type=number] {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 6px; font: inherit;
+  }
+  input[type=number] { width: 64px; }
+  button {
+    background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 6px;
+    padding: 6px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: none; color: var(--muted); border: 1px solid var(--border); font-weight: normal; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  #status { color: var(--muted); }
+  #status.error { color: var(--error); }
+  body:not(.mode-prompt) .prompt-only, body:not(.mode-chat) .chat-only { display: none !important; }
+
+  #main { flex: 1; display: flex; min-height: 0; }
+  #chatPane {
+    width: 360px; flex: none; display: flex; flex-direction: column;
+    border-right: 1px solid var(--border); background: var(--panel);
+  }
+  body.collapsed #chatPane, body.collapsed #chatResize { display: none; }
+  #chatResize {
+    width: 6px; flex: none; margin-left: -3px; margin-right: -3px; z-index: 1;
+    cursor: col-resize; background: transparent;
+  }
+  #chatResize:hover, body.resizing #chatResize { background: var(--accent); opacity: 0.4; }
+  /* The iframe would swallow pointer events mid-drag. */
+  body.resizing iframe { pointer-events: none; }
+  body.resizing { cursor: col-resize; user-select: none; }
+  #messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .empty { color: var(--muted); font-size: 13px; margin: auto; text-align: center; padding: 0 16px; }
+  .msg { padding: 6px 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-width: 92%; }
+  .msg.user { background: var(--user-bg); align-self: flex-end; }
+  .msg.assistant { background: var(--bot-bg); align-self: flex-start; }
+  .msg.pending { color: var(--muted); font-style: italic; }
+  .msg .meta { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  #chatForm { border-top: 1px solid var(--border); padding: 10px; }
+  #chatForm .row { justify-content: space-between; margin-top: 6px; }
+  iframe { flex: 1; min-width: 0; border: 0; background: #fff; }
+</style>
+</head>
+<body class="mode-prompt">
+<header id="header">
+  <div class="title-row">
+    <h1>Jacobian lens slice <span id="model"></span></h1>
+    <div class="tabs">
+      <button data-mode="prompt" class="active">Prompt</button>
+      <button data-mode="chat">Chat</button>
+    </div>
+    <button id="toggle" title="Collapse / expand (⌘\)">▲ Collapse</button>
+    <span id="summary" title="Click to expand"></span>
+  </div>
+  <div id="panel">
+    <div class="prompt-only">
+      <textarea id="prompt" spellcheck="false">Fact: The currency used in the country shaped like a boot is</textarea>
+    </div>
+    <div class="row">
+      <label class="prompt-only">Example <select id="example"><option value="">(custom)</option></select></label>
+      <label class="prompt-only"><input type="checkbox" id="chat"> Apply chat template</label>
+      <label class="chat-only" title="Longest reply the model may generate">Max reply tokens <input type="number" id="maxNew" min="1" max="1024" value="200"></label>
+      <label class="chat-only" title="Slice only the last N tokens of the conversation (keeps long chats fast)">Show last <input type="number" id="window" min="16" max="1024" value="256"> tokens</label>
+      <label>Layer stride <input type="number" id="stride" min="1" max="8" value="1"></label>
+      <label><input type="checkbox" id="mask" checked> Word-like tokens only</label>
+      <button id="run" class="prompt-only">Compute (⌘↵)</button>
+      <span id="status"></span>
+    </div>
+  </div>
+</header>
+<div id="main">
+  <aside id="chatPane" class="chat-only">
+    <div id="messages"><div class="empty">Chat with the model. After each reply, the slice on the right covers the whole conversation, including the model's own reply.</div></div>
+    <form id="chatForm">
+      <textarea id="chatInput" placeholder="Message (⌘↵ to send)" spellcheck="false"></textarea>
+      <div class="row">
+        <button type="button" id="newChat" class="secondary">New chat</button>
+        <button type="submit" id="send">Send</button>
+      </div>
+    </form>
+  </aside>
+  <div id="chatResize" class="chat-only" title="Drag to resize · double-click to reset"></div>
+  <iframe id="view" title="slice"></iframe>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let examples = [];
+  let mode = "prompt";
+  let messages = [];  // [{role, content}]
+  let busy = false;
+
+  fetch("/info").then((r) => r.json()).then((info) => {
+    $("model").textContent = "· " + info.model + " · " + info.device;
+    examples = info.examples;
+    for (const [i, e] of examples.entries()) {
+      const opt = document.createElement("option");
+      opt.value = i;
+      opt.textContent = e.slug + " — " + e.section;
+      $("example").append(opt);
+    }
+  });
+
+  const store = {
+    get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+    set(key, value) { try { localStorage.setItem(key, value); } catch {} },
+  };
+
+  function setStatus(text, isError = false) {
+    $("status").className = isError ? "error" : "";
+    $("status").textContent = text;
+  }
+
+  function setBusy(value) {
+    busy = value;
+    $("run").disabled = value;
+    $("send").disabled = value;
+    $("newChat").disabled = value;
+  }
+
+  function options() {
+    return {
+      layer_stride: Number($("stride").value) || 1,
+      mask_display: $("mask").checked,
+    };
+  }
+
+  async function post(path, body) {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r;
+  }
+
+  // ---- mode switching / collapse ----
+  function updateSummary() {
+    const text = mode === "prompt"
+      ? $("prompt").value
+      : (messages.length ? messages[messages.length - 1].content : "(empty chat)");
+    $("summary").textContent = text.replace(/\s+/g, " ").trim();
+  }
+
+  function setMode(next) {
+    mode = next;
+    document.body.classList.toggle("mode-prompt", mode === "prompt");
+    document.body.classList.toggle("mode-chat", mode === "chat");
+    for (const b of document.querySelectorAll(".tabs button")) {
+      b.classList.toggle("active", b.dataset.mode === mode);
+    }
+    updateSummary();
+    store.set("jlens-mode", mode);
+  }
+  for (const b of document.querySelectorAll(".tabs button")) {
+    b.addEventListener("click", () => setMode(b.dataset.mode));
+  }
+
+  function setCollapsed(collapsed) {
+    $("header").classList.toggle("collapsed", collapsed);
+    document.body.classList.toggle("collapsed", collapsed);
+    $("toggle").textContent = collapsed ? "▼ Expand" : "▲ Collapse";
+    updateSummary();
+    store.set("jlens-collapsed", collapsed ? "1" : "0");
+    if (!collapsed) (mode === "prompt" ? $("prompt") : $("chatInput")).focus();
+  }
+  const toggle = () => setCollapsed(!$("header").classList.contains("collapsed"));
+  $("toggle").addEventListener("click", toggle);
+  $("summary").addEventListener("click", () => setCollapsed(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "\\" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); toggle(); }
+  });
+
+  // ---- prompt mode ----
+  $("example").addEventListener("change", () => {
+    const e = examples[$("example").value];
+    if (!e) return;
+    $("prompt").value = e.prompt;
+    $("chat").checked = false;  // example prompts are already resolved
+  });
+  $("prompt").addEventListener("input", () => { $("example").value = ""; });
+
+  async function run() {
+    const prompt = $("prompt").value;
+    if (!prompt.trim() || busy) return;
+    setBusy(true);
+    setStatus("Computing…");
+    const t0 = performance.now();
+    try {
+      const r = await post("/slice", {
+        prompt,
+        chat: $("chat").checked,
+        title: $("example").value ? examples[$("example").value].section : "Custom prompt",
+        ...options(),
+      });
+      $("view").srcdoc = await r.text();
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      setStatus(`Done (${secs}s, ${r.headers.get("X-Tokens")} tokens)`);
+    } catch (err) {
+      setStatus("Error: " + err.message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  $("run").addEventListener("click", run);
+  $("prompt").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); }
+  });
+
+  // ---- chat mode ----
+  function renderMessages(pendingText) {
+    const box = $("messages");
+    box.replaceChildren();
+    if (!messages.length && !pendingText) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Chat with the model. After each reply, the slice on the right covers the whole conversation, including the model's own reply.";
+      box.append(empty);
+    }
+    for (const m of messages) {
+      const div = document.createElement("div");
+      div.className = "msg " + m.role;
+      div.textContent = m.content;
+      if (m.meta) {
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = m.meta;
+        div.append(meta);
+      }
+      box.append(div);
+    }
+    if (pendingText) {
+      const div = document.createElement("div");
+      div.className = "msg assistant pending";
+      div.textContent = pendingText;
+      box.append(div);
+    }
+    box.scrollTop = box.scrollHeight;
+  }
+
+  async function send() {
+    const text = $("chatInput").value.trim();
+    if (!text || busy) return;
+    messages.push({ role: "user", content: text });
+    $("chatInput").value = "";
+    renderMessages("Generating reply, then computing slice…");
+    setBusy(true);
+    setStatus("Generating…");
+    try {
+      const r = await post("/chat", {
+        messages: messages.map(({ role, content }) => ({ role, content })),
+        max_new_tokens: Number($("maxNew").value) || 200,
+        window: Number($("window").value) || 256,
+        ...options(),
+      });
+      const data = await r.json();
+      messages.push({
+        role: "assistant",
+        content: data.reply,
+        meta: `${data.reply_tokens} tokens · generate ${data.gen_secs}s · slice ${data.slice_secs}s`,
+      });
+      $("view").srcdoc = data.page;
+      const shown = data.shown_tokens < data.total_tokens
+        ? `last ${data.shown_tokens} of ${data.total_tokens}` : `${data.total_tokens}`;
+      setStatus(`Done (slice shows ${shown} tokens)`);
+    } catch (err) {
+      // Put the message back so it can be edited and resent.
+      messages.pop();
+      $("chatInput").value = text;
+      setStatus("Error: " + err.message, true);
+    } finally {
+      setBusy(false);
+      renderMessages();
+      updateSummary();
+    }
+  }
+  $("chatForm").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+  $("chatInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+  });
+  $("newChat").addEventListener("click", () => {
+    messages = [];
+    renderMessages();
+    updateSummary();
+    $("view").srcdoc = "";
+    setStatus("");
+    $("chatInput").focus();
+  });
+
+  // ---- chat pane resize ----
+  const DEFAULT_CHAT_WIDTH = 360;
+  function setChatWidth(px) {
+    const max = Math.max(240, window.innerWidth * 0.7);
+    const width = Math.round(Math.min(Math.max(px, 240), max));
+    $("chatPane").style.width = width + "px";
+    return width;
+  }
+  $("chatResize").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const handle = $("chatResize");
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+    const startX = e.clientX, startWidth = $("chatPane").offsetWidth;
+    const onMove = (ev) => setChatWidth(startWidth + ev.clientX - startX);
+    const onUp = () => {
+      document.body.classList.remove("resizing");
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      store.set("jlens-chat-width", String($("chatPane").offsetWidth));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  });
+  $("chatResize").addEventListener("dblclick", () => {
+    store.set("jlens-chat-width", String(setChatWidth(DEFAULT_CHAT_WIDTH)));
+  });
+  const savedWidth = Number(store.get("jlens-chat-width"));
+  if (savedWidth) setChatWidth(savedWidth);
+
+  setMode(store.get("jlens-mode") === "chat" ? "chat" : "prompt");
+  if (store.get("jlens-collapsed") === "1") setCollapsed(true);
+</script>
+</body>
+</html>
